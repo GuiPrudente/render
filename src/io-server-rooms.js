@@ -17,80 +17,57 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
-
-var usersMap = {};
+const userSocketsMap = new Map();
 
 function handleUserConnected(socket, data) {
-	try {
-		console.log(JSON.stringify(data, null, 4));
-		let userRooms = usersMap[data.user.Id] || [];
+    const userId = data.user.Id;
+    const userSockets = userSocketsMap.get(userId) || new Set();
+    userSockets.add(socket.id);
+    userSocketsMap.set(userId, userSockets);
+    socket.join(userId);
 
-		if (!userRooms.includes(socket.id)) {
-			userRooms.push(socket.id); // Add new socket id to the user's room list
-			usersMap[data.user.Id] = userRooms;
-			socket.join(data.user.Id); // Join the new socket to the user's room
-		}
-
-		io.to(data.user.Id).emit('userConnected', { usersMap: usersMap, latestUser: data.user });
-	} catch (error) {
-		console.error(socket.id + ' :: ' + error);
-	}
+    io.to(userId).emit('userConnected', { userCount: userSockets.size, latestUser: data.user });
 }
 
 function handleUserDisconnected(socket) {
-	console.log(socket.id, ' has disconnected');
-	let userId = findUserIdBySocketId(socket.id);
-	let userRooms = usersMap[userId];
-
-	if (userRooms) {
-		userRooms = userRooms.filter((id) => id !== socket.id); // Remove the socket id
-		if (userRooms.length === 0) {
-			delete usersMap[userId]; // Delete user from map if no sockets are connected
-		} else {
-			usersMap[userId] = userRooms;
-		}
-	}
-
-	io.to(userId).emit('userDisconnected', { usersMap: usersMap });
+    const userId = findUserIdBySocketId(socket.id);
+    if (userId) {
+        const userSockets = userSocketsMap.get(userId);
+        userSockets.delete(socket.id);
+        if (userSockets.size === 0) {
+            userSocketsMap.delete(userId);
+        } else {
+            userSocketsMap.set(userId, userSockets);
+        }
+        io.emit('userDisconnected', { userCount: userSockets.size, userId: userId });
+    }
 }
 
 io.on('connection', (socket) => {
-	console.log(socket.id, ' has connected');
-	socket.emit('messageFromServer', { data: 'Welcome to the server!' });
+    console.log(`${socket.id} has connected`);
 
-	socket.on('messageFromClient', (dataFromClient) => {
-		console.log(dataFromClient);
-	});
+    socket.on('newMessageToServer', (message) => {
+        const userId = findUserIdBySocketId(socket.id);
+        if (userId) {
+            io.emit('newMessageToClients', { text: message.message, userId: userId }); // Global broadcast
+        }
+    });
 
-	socket.on('newMessageToServer', (message) => {
-		let userId = findUserIdBySocketId(socket.id);
-		console.log('newMessageToServer', message);
-		console.log('socket.id', socket.id);
-		console.log('userFound', JSON.stringify(userId, null, 4));
-
-		io.to(userId).emit('newMessageToClients', { text: message.message, user: userId });
-	});
-
-	socket.on('userConnected', (data) => {
-		handleUserConnected(socket, data);
-	});
-
-	socket.on('disconnect', () => {
-		handleUserDisconnected(socket);
-	});
+    socket.on('userConnected', (data) => handleUserConnected(socket, data));
+    socket.on('disconnect', () => handleUserDisconnected(socket));
 });
 
 server.listen(PORT, () => {
-	console.log(`Server is running on port ${PORT}`);
+    console.log(`Server is running on port ${PORT}`);
 });
 
-function findUserIdBySocketId(targetSocketId) {
-	for (const [userId, socketIds] of Object.entries(usersMap)) {
-		if (socketIds.includes(targetSocketId)) {
-			return userId;
-		}
-	}
-	return null;
+function findUserIdBySocketId(socketId) {
+    for (const [userId, socketIds] of userSocketsMap.entries()) {
+        if (socketIds.has(socketId)) {
+            return userId;
+        }
+    }
+    return null;
 }
 
 console.log('Socket.io server started');
